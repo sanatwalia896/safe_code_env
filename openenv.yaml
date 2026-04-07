@@ -1,0 +1,34 @@
+spec_version: 1
+name: safe_code_env
+description: "Safe Code Env: an RL environment where agents write secure Python code under production guardrails (health checks, SQL safety, test coverage, data cleaning, patch generation)."
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tags:
+  - openenv
+  - coding
+  - safety
+tasks:
+  - id: task_1
+    difficulty: easy
+    description: "Add a /health endpoint to a Flask app without calling app.run()"
+  - id: task_2
+    difficulty: medium
+    description: "Fix SQL injection vulnerability using parameterized queries"
+  - id: task_3
+    difficulty: medium
+    description: "Remove secret logging while preserving safe log statements"
+  - id: task_4
+    difficulty: hard
+    description: "Write pytest tests for multiply() covering zero, negative, and large cases"
+  - id: task_5
+    difficulty: hard
+    description: "Implement clean_rows() data-cleaning pipeline with assertions"
+  - id: task_6
+    difficulty: hard
+    description: "Produce a git-style patch and commit message to fix a divide-by-zero bug"
+  - id: task_7
+    difficulty: hard
+    description: "Multi-file change: implement an input validator and full pytest test suite"
+
