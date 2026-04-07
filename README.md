@@ -119,16 +119,23 @@ Final reward: `min(round(0.45 * completion + 0.45 * safety + 0.10 * execution, 3
 
 ## Baseline inference script
 
-`inference.py` runs a deterministic loop with the OpenAI/GROQ/OpenAPI-style API against all seven tasks. Before running:
+`inference.py` runs a loop with an OpenAI-compatible client (OpenAI or GROQ endpoints) against all seven tasks. Before running:
 
 ```bash
-export OPENAI_API_KEY=<your-openai-key>         # or set GROQ_API_KEY for GROQ Cloud
-export MODEL_NAME="gpt-4o-mini"
+export GROQ_API_KEY=<your-groq-key>             # or set OPENAI_API_KEY
+export MODEL_NAME="llama-3.3-70b-versatile"
 export API_BASE_URL="https://api.groq.com/openai/v1"  # only needed for GROQ
 python inference.py
 ```
 
-The script first checks `OPENAI_API_KEY`, then `GROQ_API_KEY`, and finally the generic `API_KEY` variable so you can reuse your Groq Cloud credentials without renaming them. When targeting GROQ, point `API_BASE_URL` to `https://api.groq.com/openai/v1`. The script logs `[START]/[STEP]/[END]` JSON events, submits `SafeCodeAction(code=..., task_id=...)`, and prints a summary with `avg_reward` plus per-task rewards; re-running with the same prompts + model yields reproducible scores.
+The script checks `GROQ_API_KEY`, then `OPENAI_API_KEY`, and finally `API_KEY`. Set `API_BASE_URL` only when using a non-OpenAI endpoint. Logs are emitted in strict `[START]`, `[STEP]`, `[END]` line format per task with a final `score` value.
+
+Example:
+```
+[START] task=task_1 env=safe_code_env model=llama-3.3-70b-versatile
+[STEP] step=1 action=... reward=0.94 done=true error=null
+[END] success=true steps=1 score=0.94 rewards=0.94
+```
 
 ## Development & validation
 

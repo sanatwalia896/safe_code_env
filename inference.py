@@ -254,6 +254,18 @@ def _one_line(text: str, limit: int = 200) -> str:
     return single[:limit]
 
 
+def _task_id_from_obs(obs, fallback: str) -> str:
+    if hasattr(obs, "metadata") and isinstance(obs.metadata, dict):
+        meta_id = obs.metadata.get("task_id")
+        if isinstance(meta_id, str) and meta_id:
+            return meta_id
+    desc = getattr(obs, "task_description", "") or ""
+    match = re.search(r"TASK\s*(\d+)", desc, re.IGNORECASE)
+    if match:
+        return f"task_{match.group(1)}"
+    return fallback
+
+
 def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
     step = 0
     final_reward = 0.0
@@ -264,6 +276,7 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
     try:
         result = env.reset()
         obs = result.observation
+        task_id = _task_id_from_obs(obs, task_id)
 
         # ── [START] ───────────────────────────────────────────────
         print(f"[START] task={task_id} env=safe_code_env model={MODEL_NAME}")
