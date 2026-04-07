@@ -119,16 +119,16 @@ Final reward: `min(round(0.45 * completion + 0.45 * safety + 0.10 * execution, 3
 
 ## Baseline inference script
 
-`inference.py` runs a loop with an OpenAI-compatible client (OpenAI or GROQ endpoints) against all seven tasks. Before running:
+`inference.py` runs a loop with an OpenAI-compatible client against all seven tasks. Before running:
 
 ```bash
-export GROQ_API_KEY=<your-groq-key>             # or set OPENAI_API_KEY
+export HF_TOKEN=<your-api-key>
 export MODEL_NAME="llama-3.3-70b-versatile"
-export API_BASE_URL="https://api.groq.com/openai/v1"  # only needed for GROQ
+export API_BASE_URL="https://api.groq.com/openai/v1"
 python inference.py
 ```
 
-The script checks `GROQ_API_KEY`, then `OPENAI_API_KEY`, and finally `API_KEY`. Set `API_BASE_URL` only when using a non-OpenAI endpoint. Logs are emitted in strict `[START]`, `[STEP]`, `[END]` line format per task with a final `score` value.
+`HF_TOKEN` is required. `API_BASE_URL` and `MODEL_NAME` have defaults. Logs are emitted in strict `[START]`, `[STEP]`, `[END]` line format per task with a final `score` value.
 
 Example:
 ```
