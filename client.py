@@ -12,7 +12,11 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import SafeCodeAction, SafeCodeObservation
+try:
+    from .models import SafeCodeAction, SafeCodeObservation
+except ImportError:
+    # Support direct script execution from repo root where package context is absent.
+    from models import SafeCodeAction, SafeCodeObservation
 
 
 class SafeCodeEnv(

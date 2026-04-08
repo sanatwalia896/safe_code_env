@@ -11,11 +11,22 @@ import os
 import time
 import re
 import sys
-from dotenv import find_dotenv, load_dotenv
-load_dotenv(find_dotenv())
 
+# Ensure local imports work even if runner cwd differs.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
-from openai import OpenAI
+try:
+    from dotenv import find_dotenv, load_dotenv
+    load_dotenv(find_dotenv())
+except Exception:
+    pass
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 # ── env vars ──────────────────────────────────────────────────
 MODEL_NAME   = os.environ.get("MODEL_NAME",   "meta-llama/Meta-Llama-3.1-8B-Instruct")
@@ -27,7 +38,14 @@ if not API_KEY:
     print("HF_TOKEN environment variable not set", file=sys.stderr)
 
 # ── OpenAI client pointing at HF Router ───────────────────────
-llm = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+llm = None
+if OpenAI is None:
+    print("openai package not available", file=sys.stderr)
+elif API_KEY:
+    try:
+        llm = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+    except Exception as exc:
+        print(f"failed to initialize OpenAI client: {exc}", file=sys.stderr)
 
 # ── import env client ─────────────────────────────────────────
 try:
@@ -36,8 +54,9 @@ except ImportError:
     try:
         from safe_code_env.client import SafeCodeEnv, SafeCodeAction
     except ImportError as exc:
-        print(json.dumps({"type": "ERROR", "message": f"cannot import client ({exc})"}))
-        sys.exit(1)
+        SafeCodeEnv = None
+        SafeCodeAction = None
+        print(f"cannot import env client: {exc}", file=sys.stderr)
 
 SYSTEM_PROMPT = """You are a professional, security-conscious software engineer.
 
@@ -53,6 +72,8 @@ Respond with ONLY raw Python code. No markdown fences. No explanation."""
 
 
 def call_llm(messages: list) -> str:
+    if llm is None:
+        return "pass"
     try:
         response = llm.chat.completions.create(
             model=MODEL_NAME,
@@ -172,7 +193,7 @@ def main():
     tasks   = ["task_1", "task_2", "task_3", "task_4", "task_5", "task_6", "task_7"]
     rewards = []
 
-    if not API_KEY:
+    if not API_KEY or SafeCodeEnv is None or SafeCodeAction is None:
         for i, task_id in enumerate(tasks):
             run_episode(env=None, episode_num=i + 1, task_id=task_id)
         return
