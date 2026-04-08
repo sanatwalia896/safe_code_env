@@ -2,13 +2,12 @@
 
 """
 inference.py — SafeCodeAgent
-OpenAI client → Groq
+OpenAI client → Hugging Face Router (OpenAI-compatible)
 Strict [START] [STEP] [END] logs required by hackathon.
 Place at ROOT of project.
 """
 
 import os
-import json
 import time
 import re
 import sys
@@ -19,23 +18,15 @@ load_dotenv(find_dotenv())
 from openai import OpenAI
 
 # ── env vars ──────────────────────────────────────────────────
-MODEL_NAME   = os.environ.get("MODEL_NAME",   "llama-3.1-8b-instant")
-API_KEY = os.environ.get("GROQ_API_KEY", "")
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME",   "meta-llama/Meta-Llama-3.1-8B-Instruct")
+API_KEY = os.environ.get("HF_TOKEN", "")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
 ENV_URL      = os.environ.get("ENV_URL",      "http://localhost:8000")
 
 if not API_KEY:
-    print(
-        json.dumps(
-            {
-                "type": "ERROR",
-                "message": "GROQ_API_KEY or OPENAI_API_KEY environment variable not set",
-            }
-        )
-    )
-    sys.exit(1)
+    print("HF_TOKEN environment variable not set", file=sys.stderr)
 
-# ── OpenAI client pointing at Groq ───────────────────────────
+# ── OpenAI client pointing at HF Router ───────────────────────
 llm = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
 
 # ── import env client ─────────────────────────────────────────
@@ -113,13 +104,16 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
     last_error = None
 
     try:
-        result = env.reset()
-        obs = result.observation
-        task_id = _task_id_from_obs(obs, task_id)
-
         # ── [START] ───────────────────────────────────────────────
         print(f"[START] task={task_id} env=safe_code_env model={MODEL_NAME}")
         sys.stdout.flush()
+
+        if env is None:
+            raise RuntimeError("environment unavailable")
+
+        result = env.reset()
+        obs = result.observation
+        task_id = _task_id_from_obs(obs, task_id)
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -135,6 +129,7 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
             obs = step_result.observation
             final_reward = obs.reward
             done = obs.done or step_result.done
+            last_error = getattr(obs, "last_action_error", None) or getattr(step_result, "last_action_error", None)
 
             step_rewards.append(obs.reward)
             # ── [STEP] ────────────────────────────────────────────
@@ -160,6 +155,7 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
                 })
     except Exception as exc:
         last_error = str(exc)
+        print(f"[ERROR] {last_error}", file=sys.stderr)
     finally:
         # ── [END] ─────────────────────────────────────────────
         rewards_str = ",".join(_fmt_reward(r) for r in step_rewards)
@@ -176,11 +172,21 @@ def main():
     tasks   = ["task_1", "task_2", "task_3", "task_4", "task_5", "task_6", "task_7"]
     rewards = []
 
-    with SafeCodeEnv(base_url=ENV_URL).sync() as env:
+    if not API_KEY:
         for i, task_id in enumerate(tasks):
-            reward = run_episode(env, episode_num=i + 1, task_id=task_id)
-            rewards.append(reward)
-            time.sleep(1)
+            run_episode(env=None, episode_num=i + 1, task_id=task_id)
+        return
+
+    try:
+        with SafeCodeEnv(base_url=ENV_URL).sync() as env:
+            for i, task_id in enumerate(tasks):
+                reward = run_episode(env, episode_num=i + 1, task_id=task_id)
+                rewards.append(reward)
+                time.sleep(1)
+    except Exception as exc:
+        print(f"[ERROR] env connection failed: {exc}", file=sys.stderr)
+        for i, task_id in enumerate(tasks):
+            run_episode(env=None, episode_num=i + 1, task_id=task_id)
 
     # No SUMMARY output to comply with strict hackathon log format.
 
