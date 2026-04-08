@@ -68,7 +68,70 @@ STRICT RULES — never violate these:
 - Never access os.environ for secrets
 - Always write clean, working Python code
 
-Respond with ONLY raw Python code. No markdown fences. No explanation."""
+For every step, respond in EXACTLY this format:
+
+ACTION:
+<one short, plain-English action plan. No apologies, no self-references, no "I will", no mention of formatting or errors.>
+
+CODE:
+<raw python code only>
+
+No markdown fences. No extra sections."""
+
+
+def _strip_markdown_fences(text: str) -> str:
+    # Remove ``` / ```python fences wherever they appear.
+    lines = (text or "").splitlines()
+    kept = []
+    for line in lines:
+        if line.strip().startswith("```"):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _sanitize_action_description(text: str) -> str:
+    """
+    Keep ACTION focused on intent, not model self-talk (improves BGE stability).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    bad = re.compile(r"\b(previous|format|formatting|markdown|syntax|error|issue|apolog|sorry)\b", re.I)
+    cleaned_lines = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if bad.search(s):
+            continue
+        cleaned_lines.append(s)
+
+    cleaned = " ".join(cleaned_lines).strip()
+    return cleaned
+
+
+def parse_action_and_code(text: str) -> tuple[str, str]:
+    """
+    Parse the model response into (action_description, code).
+
+    Backwards compatible:
+    - If the model returns only code, action_description will be "" and code will be the full text.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "", "pass"
+
+    # Happy path: ACTION: ... CODE: ...
+    m = re.search(r"(?is)\bACTION:\s*(.*?)\bCODE:\s*(.*)\Z", raw)
+    if m:
+        action_desc = _sanitize_action_description((m.group(1) or "").strip())
+        code = _strip_markdown_fences((m.group(2) or "").strip())
+        return action_desc, (code or "pass")
+
+    # If the model forgot headers, treat everything as code.
+    return "", _strip_markdown_fences(raw)
 
 
 def call_llm(messages: list) -> str:
@@ -144,9 +207,10 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
         while not done and step < 5:
             step += 1
 
-            code = call_llm(messages)
+            content = call_llm(messages)
+            action_description, code = parse_action_and_code(content)
 
-            step_result = env.step(SafeCodeAction(code=code, task_id=task_id))
+            step_result = env.step(SafeCodeAction(action_description=action_description, code=code, task_id=task_id))
             obs = step_result.observation
             final_reward = obs.reward
             done = obs.done or step_result.done
@@ -154,6 +218,7 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
 
             step_rewards.append(obs.reward)
             # ── [STEP] ────────────────────────────────────────────
+            # Keep logs comparable with earlier runs: show the code snippet, not the intent.
             action_str = _one_line(code, limit=200)
             error_str = "null" if last_error is None else _one_line(last_error, 100)
             print(
@@ -162,7 +227,7 @@ def run_episode(env, episode_num: int, task_id: str = "unknown") -> float:
             )
             sys.stdout.flush()
 
-            messages.append({"role": "assistant", "content": code})
+            messages.append({"role": "assistant", "content": content})
 
             if not done:
                 messages.append({

@@ -15,6 +15,10 @@ from pydantic import Field, ConfigDict
 class SafeCodeAction(Action):
     model_config = ConfigDict(extra="allow")
     
+    action_description: str = Field(
+        default="",
+        description="Plain-language description of what the agent intends to do (used for semantic safety scoring).",
+    )
     code: str = Field(
         ...,
         description="Python code written by the agent to solve the task"

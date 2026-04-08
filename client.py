@@ -51,6 +51,7 @@ class SafeCodeEnv(
         """Serialize the coding action into the HTTP/WebSocket payload."""
 
         return {
+            "action_description": action.action_description,
             "code": action.code,
             "task_id": action.task_id,
         }

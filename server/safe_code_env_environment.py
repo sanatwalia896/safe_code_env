@@ -63,6 +63,7 @@ class SafeCodeEnvironment(Environment):
 
         # grade it
         reward = self._grader.grade(
+            action_description=getattr(action, "action_description", "") or "",
             code=action.code,
             task_id=self._current_task_id,
             stdout=stdout,
