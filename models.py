@@ -7,32 +7,107 @@
 """
 Data models for the Safe Code Env Environment.
 
-The safe_code_env environment grades agent-submitted Python code across real-world engineering tasks.
+The realistic version of Safe Code Env exposes explicit filesystem and command
+tools over a seeded workspace instead of accepting a single code blob.
 """
-from openenv.core.env_server.types import Action, Observation
-from pydantic import Field, ConfigDict
+
+from typing import List, Literal, Optional
+
+from openenv.core.env_server.types import Action, Observation, State
+from pydantic import ConfigDict, Field
+
 
 class SafeCodeAction(Action):
-    model_config = ConfigDict(extra="allow")
-    
-    code: str = Field(
-        ...,
-        description="Python code written by the agent to solve the task"
+    """A single tool invocation against the current workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: Literal[
+        "list_files",
+        "read_file",
+        "read_files",
+        "write_file",
+        "search",
+        "diff",
+        "run_command",
+        "submit",
+    ] = Field(..., description="Tool/action to execute")
+    path: str = Field(
+        default=".",
+        description="Workspace-relative path used by file-based tools",
     )
-    task_id: str = Field(
-        default="task_1",
-        description="Which task: task_1, task_2, or task_3"
+    paths: Optional[List[str]] = Field(
+        default=None,
+        description="Workspace-relative paths used by read_files",
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="Replacement file contents for write_file",
+    )
+    pattern: Optional[str] = Field(
+        default=None,
+        description="Search pattern for the search action",
+    )
+    command: Optional[str] = Field(
+        default=None,
+        description="Command to run inside the workspace for run_command",
     )
 
+
 class SafeCodeObservation(Observation):
+    """Result of a single tool invocation."""
+
     model_config = ConfigDict(extra="allow")
-    
-    stdout:           str   = Field(default="",    description="stdout from execution")
-    stderr:           str   = Field(default="",    description="stderr from execution")
-    exit_code:        int   = Field(default=0,     description="0=success 1=error")
-    reward:           float = Field(default=0.0,   description="reward 0.0-1.0")
-    done:             bool  = Field(default=False, description="episode complete")
-    feedback:         str   = Field(default="",    description="grader feedback")
-    task_description: str   = Field(default="",    description="task the agent must solve")
-    safety_score:     float = Field(default=1.0,   description="safety score 0.0-1.0")
-    completion_score: float = Field(default=0.0,   description="task completion 0.0-1.0")
+
+    success: bool = Field(default=True, description="Whether the tool succeeded")
+    output: str = Field(default="", description="Primary tool output")
+    error: str = Field(default="", description="Error details if the tool failed")
+    exit_code: int = Field(default=0, description="Exit code for command execution")
+    reward: float = Field(default=0.0, description="Reward for this step")
+    done: bool = Field(default=False, description="Whether the episode is complete")
+    feedback: str = Field(
+        default="",
+        description="Environment or grader feedback for the agent",
+    )
+    task_id: str = Field(default="", description="Current task identifier")
+    task_description: str = Field(
+        default="",
+        description="Task instructions shown to the agent",
+    )
+    workspace_path: str = Field(
+        default="",
+        description="Absolute path to the seeded workspace for this episode",
+    )
+    current_path: str = Field(
+        default=".",
+        description="Workspace-relative path the action operated on",
+    )
+    files: List[str] = Field(
+        default_factory=list,
+        description="Relevant file listing for list/search-style actions",
+    )
+    changed_files: List[str] = Field(
+        default_factory=list,
+        description="Workspace-relative files changed so far in the episode",
+    )
+    available_tools: List[str] = Field(
+        default_factory=list,
+        description="Available tool names for the current environment",
+    )
+
+
+class SafeCodeState(State):
+    """Persistent environment state across tool steps."""
+
+    task_id: str = Field(default="", description="Current task identifier")
+    workspace_path: str = Field(default="", description="Absolute workspace path")
+    changed_files: List[str] = Field(
+        default_factory=list,
+        description="Files modified in the current workspace",
+    )
+    available_tools: List[str] = Field(
+        default_factory=list,
+        description="Tool names exposed by the environment",
+    )
+    last_command: str = Field(default="", description="Last command executed")
+    last_exit_code: int = Field(default=0, description="Last command exit code")

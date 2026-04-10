@@ -15,9 +15,9 @@ description = "Safe Code Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     "openenv-core[core]>=0.2.2",
-    "fastembed>=0.2.0",
-    "numpy>=1.24.0",
     "fastapi>=0.104.0",
+    "flask>=3.0.0",
+    "pytest>=8.0.0",
     "uvicorn>=0.24.0",
     "pydantic>=2.0.0",
     "openai>=1.0.0",
@@ -37,3 +37,6 @@ server = "safe_code_env.server.app:main"
 include-package-data = true
 packages = ["safe_code_env", "safe_code_env.server"]
 package-dir = { "safe_code_env" = ".", "safe_code_env.server" = "server" }
+
+[tool.setuptools.package-data]
+"safe_code_env.server" = ["tasks/**/*"]

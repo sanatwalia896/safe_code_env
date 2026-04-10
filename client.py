@@ -10,83 +10,55 @@ from typing import Dict
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
-from openenv.core.env_server.types import State
 
-from .models import SafeCodeAction, SafeCodeObservation
+try:
+    from .models import SafeCodeAction, SafeCodeObservation, SafeCodeState
+except ImportError:
+    from models import SafeCodeAction, SafeCodeObservation, SafeCodeState
 
 
 class SafeCodeEnv(
-    EnvClient[SafeCodeAction, SafeCodeObservation, State]
+    EnvClient[SafeCodeAction, SafeCodeObservation, SafeCodeState]
 ):
-    """
-    Client for the Safe Code Env Environment.
-
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated environment session on the server.
-
-    Example:
-        >>> with SafeCodeEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.task_description.splitlines()[0])
-        ...     action = SafeCodeAction(code="def health():\\n    return {'status': 'ok'}", task_id="task_1")
-        ...     step_result = client.step(action)
-        ...     print(step_result.observation.feedback)
-
-    Example with Docker:
-        >>> client = SafeCodeEnv.from_docker_image("safe_code_env-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     action = SafeCodeAction(code="def multiply(a,b):\\n    return a*b", task_id="task_3")
-        ...     client.step(action)
-        ... finally:
-        ...     client.close()
-    """
+    """Client for the workspace-based Safe Code Env environment."""
 
     def _step_payload(self, action: SafeCodeAction) -> Dict:
-        """Serialize the coding action into the HTTP/WebSocket payload."""
-
-        return {
-            "code": action.code,
-            "task_id": action.task_id,
-        }
+        return action.model_dump(exclude_none=True)
 
     def _parse_result(self, payload: Dict) -> StepResult[SafeCodeObservation]:
-        """Rebuild the observation from the server payload."""
-
-        obs_data = payload.get("observation")
-        if not obs_data:
-            obs_data = payload
+        obs_data = payload.get("observation") or payload
         observation = SafeCodeObservation(
-            stdout=obs_data.get("stdout", ""),
-            stderr=obs_data.get("stderr", ""),
+            success=obs_data.get("success", True),
+            output=obs_data.get("output", ""),
+            error=obs_data.get("error", ""),
             exit_code=obs_data.get("exit_code", 0),
             reward=obs_data.get("reward", payload.get("reward", 0.0)),
-            done=payload.get("done", False),
+            done=payload.get("done", obs_data.get("done", False)),
             feedback=obs_data.get("feedback", ""),
+            task_id=obs_data.get("task_id", ""),
             task_description=obs_data.get("task_description", ""),
-            safety_score=obs_data.get("safety_score", 1.0),
-            completion_score=obs_data.get("completion_score", 0.0),
+            workspace_path=obs_data.get("workspace_path", ""),
+            current_path=obs_data.get("current_path", "."),
+            files=obs_data.get("files", []),
+            changed_files=obs_data.get("changed_files", []),
+            available_tools=obs_data.get("available_tools", []),
             metadata=obs_data.get("metadata", {}),
         )
 
         return StepResult(
             observation=observation,
             reward=payload.get("reward", observation.reward),
-            done=payload.get("done", False),
+            done=payload.get("done", observation.done),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
-        """
-        Parse server response into State object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            State object with episode_id and step_count
-        """
-        return State(
+    def _parse_state(self, payload: Dict) -> SafeCodeState:
+        return SafeCodeState(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
+            task_id=payload.get("task_id", ""),
+            workspace_path=payload.get("workspace_path", ""),
+            changed_files=payload.get("changed_files", []),
+            available_tools=payload.get("available_tools", []),
+            last_command=payload.get("last_command", ""),
+            last_exit_code=payload.get("last_exit_code", 0),
         )

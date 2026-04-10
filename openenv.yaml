@@ -1,6 +1,6 @@
 spec_version: 1
 name: safe_code_env
-description: "Safe Code Env: an RL environment where agents write secure Python code under production guardrails (health checks, SQL safety, test coverage, data cleaning, patch generation)."
+description: "Safe Code Env: a workspace-based coding environment where agents inspect files, edit code, run tests, and submit final filesystem state for grading."
 type: space
 runtime: fastapi
 app: server.app:app
@@ -9,26 +9,24 @@ tags:
   - openenv
   - coding
   - safety
+  - filesystem
+  - tools
 tasks:
   - id: task_1
     difficulty: easy
-    description: "Add a /health endpoint to a Flask app without calling app.run()"
+    description: "Repair a Flask app so /health returns {\"status\": \"ok\"} and the real tests pass"
   - id: task_2
     difficulty: medium
-    description: "Fix SQL injection vulnerability using parameterized queries"
+    description: "Fix a real SQL injection bug in db_utils.py and pass the provided tests"
   - id: task_3
     difficulty: medium
-    description: "Remove secret logging while preserving safe log statements"
+    description: "Repair a broken validator module in src/validator.py so the test suite passes"
   - id: task_4
-    difficulty: hard
-    description: "Write pytest tests for multiply() covering zero, negative, and large cases"
+    difficulty: medium
+    description: "Repair a rolling-window rate limiter implementation in src/rate_limit.py"
   - id: task_5
-    difficulty: hard
-    description: "Implement clean_rows() data-cleaning pipeline with assertions"
+    difficulty: medium
+    description: "Repair a JSON config loader so defaults merge correctly and invalid JSON raises ValueError"
   - id: task_6
-    difficulty: hard
-    description: "Produce a git-style patch and commit message to fix a divide-by-zero bug"
-  - id: task_7
-    difficulty: hard
-    description: "Multi-file change: implement an input validator and full pytest test suite"
-
+    difficulty: medium
+    description: "Repair recursive secret redaction in src/audit.py"
