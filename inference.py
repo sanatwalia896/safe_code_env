@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from dotenv import find_dotenv, load_dotenv
+import openai
 from openai import OpenAI
 
 from client import SafeCodeAction, SafeCodeEnv
@@ -48,6 +49,7 @@ Available action schema:
 
 Rules:
 - Always return exactly one JSON object, with no markdown fences and no explanation.
+- BE TOKEN EFFICIENT: Use the minimum number of actions necessary.
 - Prefer inspecting files and tests before editing.
 - Use `read_files` when you need to inspect a source file and its test together.
 - Use `edit_file` for precise modifications; it requires that `old_text` be unique in the file.
@@ -66,13 +68,30 @@ def build_client() -> OpenAI:
 
 
 def call_llm(llm: OpenAI, messages: list[dict[str, str]]) -> str:
-    response = llm.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_tokens=2000,
-        temperature=0.1,
-    )
-    return (response.choices[0].message.content or "").strip()
+    max_retries = 5
+    retry_delay = 2
+    for attempt in range(max_retries):
+        try:
+            response = llm.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except openai.RateLimitError as e:
+            if attempt == max_retries - 1:
+                raise e
+            print(f"Rate limit reached. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+            time.sleep(retry_delay)
+            retry_delay *= 2
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            print(f"LLM call failed: {e}. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+            retry_delay *= 2
+    return ""
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
