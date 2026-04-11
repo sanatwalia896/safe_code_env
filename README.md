@@ -73,7 +73,7 @@ Each observation includes:
 
 ## Task Layout
 
-The environment currently seeds six realistic starter repos:
+The environment currently seeds seven realistic starter repos:
 
 - `task_1`: Flask `/health` endpoint repair
 - `task_2`: SQL injection fix in `db_utils.py`
@@ -81,12 +81,13 @@ The environment currently seeds six realistic starter repos:
 - `task_4`: broken rolling-window rate limiter
 - `task_5`: broken JSON config loader/default merge
 - `task_6`: broken recursive audit secret redaction
+- `task_7`: larger multi-module orders service with a pricing bug under `src/orders/`
 
 The source for those tasks lives under [server/tasks](/Users/sanat/Documents/PROJECTS/scaler_hackathon/safe_code_env/server/tasks).
 
 ## Grading
 
-The grader reads the final workspace state and runs each task’s real pytest suite. `run_command` with `pytest -q` gives partial progress, while `submit` performs final evaluation and ends the episode. `diff` shows the current workspace delta relative to the seeded starter, and `read_files` lets the agent inspect multiple files in one step.
+The grader reads the final workspace state and runs each task’s real pytest suite. `run_command` with `pytest -q` gives partial progress, while `submit` performs final evaluation and ends the episode. `diff` shows the current workspace delta relative to the seeded starter, and `read_files` lets the agent inspect multiple files in one step. The largest task (`task_7`) forces the agent to navigate a broader service-style codebase rather than a single file.
 
 ## Local Run
 

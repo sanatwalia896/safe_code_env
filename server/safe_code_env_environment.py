@@ -37,6 +37,7 @@ TOOL_NAMES = [
     "read_file",
     "read_files",
     "write_file",
+    "edit_file",
     "search",
     "diff",
     "run_command",
@@ -208,6 +209,33 @@ class SafeCodeEnvironment(Environment):
                 current_path=action.path,
             )
 
+        if action.action_type == "edit_file":
+            if action.old_text is None or action.new_text is None:
+                return self._error_observation("edit_file requires both old_text and new_text", action.path)
+            try:
+                path = self._resolve_path(action.path)
+            except ValueError as exc:
+                return self._error_observation(str(exc), action.path)
+            if not path.is_file():
+                return self._error_observation(f"File not found: {action.path}", action.path)
+
+            content = path.read_text(encoding="utf-8")
+            if action.old_text not in content:
+                return self._error_observation(f"old_text not found in file: {action.path}", action.path)
+
+            if content.count(action.old_text) > 1:
+                return self._error_observation(f"old_text is not unique in file: {action.path}. Please provide a more specific string.", action.path)
+
+            new_content = content.replace(action.old_text, action.new_text)
+            path.write_text(new_content, encoding="utf-8")
+            return SafeCodeObservation(
+                success=True,
+                output=f"Replaced '{action.old_text}' with '{action.new_text}' in {action.path}",
+                reward=0.05,
+                feedback=f"Edited {action.path}.",
+                current_path=action.path,
+            )
+
         if action.action_type == "search":
             if not action.pattern:
                 return self._error_observation("search requires pattern", action.path)
@@ -236,6 +264,8 @@ class SafeCodeEnvironment(Environment):
                 done=True,
                 feedback=result.feedback,
                 current_path=".",
+                passed_tests=result.passed_tests,
+                failed_tests=result.failed_tests,
             )
 
         return self._error_observation(f"Unsupported action_type: {action.action_type}", action.path)
@@ -257,11 +287,13 @@ class SafeCodeEnvironment(Environment):
 
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            f"{self._workspace_path}{os.pathsep}{existing_pythonpath}"
-            if existing_pythonpath
-            else str(self._workspace_path)
-        )
+        python_paths = [str(self._workspace_path)]
+        src_path = self._workspace_path / "src"
+        if src_path.exists():
+            python_paths.append(str(src_path))
+        if existing_pythonpath:
+            python_paths.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
         result = subprocess.run(
             parts,
@@ -293,6 +325,8 @@ class SafeCodeEnvironment(Environment):
             done=False,
             feedback=feedback,
             current_path=".",
+            passed_tests=getattr(grade, 'passed_tests', 0) if parts[0] == "pytest" else 0,
+            failed_tests=getattr(grade, 'failed_tests', 0) if parts[0] == "pytest" else 0,
             metadata={"command": command},
         )
 

@@ -7,17 +7,52 @@ than the text of a submitted action.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shutil
 import subprocess
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
-
 TASKS_ROOT = Path(__file__).resolve().parent / "tasks"
 
+
+class Validator(ABC):
+    """Abstract base for all workspace validators."""
+    @abstractmethod
+    def validate(self, task_id: str, workspace_path: Path) -> tuple[bool, str]:
+        """Returns (success, feedback)."""
+        pass
+
+
+class ASTValidator(Validator):
+    """Ensures all Python files in the workspace are syntactically correct."""
+    def validate(self, task_id: str, workspace_path: Path) -> tuple[bool, str]:
+        for py_file in workspace_path.rglob("*.py"):
+            if "__pycache__" in py_file.parts:
+                continue
+            try:
+                ast.parse(py_file.read_text(encoding="utf-8"))
+            except SyntaxError as exc:
+                return False, f"Syntax error in {py_file.relative_to(workspace_path)}: {exc}"
+        return True, "AST validation passed."
+
+
+class SecurityValidator(Validator):
+    """Detects common vulnerabilities via pattern matching."""
+    def validate(self, task_id: str, workspace_path: Path) -> tuple[bool, str]:
+        # Task 2 specific check: SQL injection (string formatting in queries)
+        if task_id == "task_2":
+            for py_file in workspace_path.rglob("*.py"):
+                content = py_file.read_text(encoding="utf-8")
+                # Detect common SQLi patterns like f"SELECT ... {var}" or "..." % var
+                if re.search(r"execute\s*\(\s*f?['\"].*?\{.*?\}", content) or \
+                   re.search(r"execute\s*\(\s*['\"].*? %", content):
+                    return False, f"Security vulnerability (SQLi) detected in {py_file.relative_to(workspace_path)}"
+        return True, "Security validation passed."
 
 @dataclass(frozen=True)
 class TaskDefinition:
@@ -124,6 +159,20 @@ TASKS: Dict[str, TaskDefinition] = {
         required_files=["src/audit.py"],
         allowed_commands=["pytest", "python", "python3", "ls", "pwd"],
     ),
+    "task_7": TaskDefinition(
+        task_id="task_7",
+        title="Repair orders service pricing flow",
+        description=(
+            "Task 7: This workspace is a larger orders codebase with multiple modules under `src/orders/`.\n"
+            "The bug is in the pricing flow used by the service layer, but the tests exercise models, pricing,\n"
+            "serializers, and the service together. Navigate the codebase, identify the broken logic, repair it,\n"
+            "verify the diff, and submit only after the full test suite passes."
+        ),
+        starter_dir=TASKS_ROOT / "task_7" / "starter",
+        test_command=["pytest", "-q"],
+        required_files=["src/orders/pricing.py", "src/orders/service.py"],
+        allowed_commands=["pytest", "python", "python3", "ls", "pwd"],
+    ),
 }
 
 
@@ -147,6 +196,8 @@ class WorkspaceGrader:
 
     def evaluate_workspace(self, task_id: str, workspace_path: Path, *, final: bool) -> GradeResult:
         task = TASKS[task_id]
+
+        # 1. Required Files Gate
         for relative_path in task.required_files:
             if not (workspace_path / relative_path).exists():
                 feedback = f"Missing required file: {relative_path}"
@@ -162,13 +213,31 @@ class WorkspaceGrader:
                     failed_tests=1,
                 )
 
+        # 2. AST Gate
+        ast_val = ASTValidator()
+        ast_success, ast_feedback = ast_val.validate(task_id, workspace_path)
+        if not ast_success:
+            return GradeResult(
+                reward=0.0,
+                feedback=ast_feedback,
+                success=False,
+                done=final,
+                exit_code=1,
+                stdout="",
+                stderr=ast_feedback,
+                passed_tests=0,
+                failed_tests=1,
+            )
+
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            f"{workspace_path}{os.pathsep}{existing_pythonpath}"
-            if existing_pythonpath
-            else str(workspace_path)
-        )
+        python_paths = [str(workspace_path)]
+        src_path = workspace_path / "src"
+        if src_path.exists():
+            python_paths.append(str(src_path))
+        if existing_pythonpath:
+            python_paths.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
         try:
@@ -195,10 +264,30 @@ class WorkspaceGrader:
             )
 
         passed, failed = self._parse_pytest_summary(result.stdout + "\n" + result.stderr)
-        reward = self._reward_from_tests(result.returncode, passed, failed, final=final)
+
+        # 3. Security Gate (only if tests passed or are partially passing)
+        security_bonus = 0.0
+        if result.returncode == 0 or passed > 0:
+            sec_val = SecurityValidator()
+            sec_success, sec_feedback = sec_val.validate(task_id, workspace_path)
+            if not sec_success:
+                return GradeResult(
+                    reward=0.0,
+                    feedback=sec_feedback,
+                    success=False,
+                    done=final,
+                    exit_code=1,
+                    stdout=result.stdout,
+                    stderr=result.stderr + "\n" + sec_feedback,
+                    passed_tests=passed,
+                    failed_tests=failed + 1,
+                )
+            security_bonus = 0.05
+
+        reward = self._reward_from_tests(result.returncode, passed, failed, final=final) + security_bonus
 
         if result.returncode == 0:
-            feedback = "All tests passed."
+            feedback = "All tests passed and security check passed."
         elif passed or failed:
             feedback = f"Tests progress: {passed} passed, {failed} failed."
         else:
@@ -206,7 +295,7 @@ class WorkspaceGrader:
 
         self.feedback = feedback
         return GradeResult(
-            reward=reward,
+            reward=min(reward, 1.0),
             feedback=feedback,
             success=result.returncode == 0,
             done=final,
@@ -240,8 +329,13 @@ class WorkspaceGrader:
     def _reward_from_tests(self, exit_code: int, passed: int, failed: int, *, final: bool) -> float:
         total = passed + failed
         if exit_code == 0:
-            return 1.0 if final else 0.95
+            # Submission incentive: reward 0.97 for near-perfect test runs to encourage final submit
+            return 1.0 if final else 0.97
         if total <= 0:
             return 0.0
+
+        # Non-linear reward curve for partial test passes
         progress = passed / total
-        return round(min(progress * 0.85, 0.85 if final else 0.8), 3)
+        reward = (progress ** 2) * 0.85
+
+        return round(min(reward, 0.85 if final else 0.8), 3)

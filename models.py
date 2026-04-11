@@ -27,6 +27,7 @@ class SafeCodeAction(Action):
         "read_file",
         "read_files",
         "write_file",
+        "edit_file",
         "search",
         "diff",
         "run_command",
@@ -43,6 +44,14 @@ class SafeCodeAction(Action):
     content: Optional[str] = Field(
         default=None,
         description="Replacement file contents for write_file",
+    )
+    old_text: Optional[str] = Field(
+        default=None,
+        description="Text to be replaced for edit_file",
+    )
+    new_text: Optional[str] = Field(
+        default=None,
+        description="Replacement text for edit_file",
     )
     pattern: Optional[str] = Field(
         default=None,
@@ -65,6 +74,8 @@ class SafeCodeObservation(Observation):
     exit_code: int = Field(default=0, description="Exit code for command execution")
     reward: float = Field(default=0.0, description="Reward for this step")
     done: bool = Field(default=False, description="Whether the episode is complete")
+    passed_tests: int = Field(default=0, description="Number of tests passed in the current state")
+    failed_tests: int = Field(default=0, description="Number of tests failed in the current state")
     feedback: str = Field(
         default="",
         description="Environment or grader feedback for the agent",

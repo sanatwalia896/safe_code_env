@@ -26,20 +26,22 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Meta-Llama-3.1-8B-Instruct
 API_KEY = os.environ.get("HF_TOKEN", "")
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
-MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "12"))
-NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "6"))
+MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "14"))
+NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "7"))
 
 SYSTEM_PROMPT = """You are a careful coding agent operating inside a workspace environment.
 
-You do not output code directly unless you are using the `write_file` action.
+You do not output code directly unless you are using the `write_file` or `edit_file` actions.
 You must choose exactly one environment action at a time.
 
 Available action schema:
 {
-  "action_type": "list_files" | "read_file" | "read_files" | "write_file" | "search" | "diff" | "run_command" | "submit",
+  "action_type": "list_files" | "read_file" | "read_files" | "write_file" | "edit_file" | "search" | "diff" | "run_command" | "submit",
   "path": "workspace-relative path",
   "paths": ["workspace-relative path", "..."],
   "content": "full replacement file contents for write_file",
+  "old_text": "exact text to be replaced for edit_file",
+  "new_text": "replacement text for edit_file",
   "pattern": "substring or regex-lite text for search",
   "command": "command string for run_command"
 }
@@ -48,10 +50,11 @@ Rules:
 - Always return exactly one JSON object, with no markdown fences and no explanation.
 - Prefer inspecting files and tests before editing.
 - Use `read_files` when you need to inspect a source file and its test together.
-- Use `diff` to verify what you changed before submitting.
-- Use `run_command` with `pytest -q` to measure progress.
+- Use `edit_file` for precise modifications; it requires that `old_text` be unique in the file.
+- Use `write_file` only when a complete rewrite is necessary.
+- Mandatory: Run `pytest -q` using `run_command` after every modification to verify progress.
+- Mandatory: Use `diff` to check changes before using `submit`.
 - Use `submit` only when you believe the workspace is fixed or when you are out of ideas.
-- `write_file` replaces the full file contents, so first `read_file` when needed.
 - Never reference files outside the workspace.
 """
 
@@ -106,6 +109,22 @@ def observation_to_user_message(obs) -> str:
     return json.dumps(payload, indent=2)
 
 
+def extract_candidate_paths(text: str) -> list[str]:
+    if not text:
+        return []
+    matches = re.findall(r"([A-Za-z0-9_./-]+\.(?:py|json|md))", text)
+    cleaned = []
+    for match in matches:
+        if match.startswith("a/") or match.startswith("b/"):
+            match = match[2:]
+        cleaned.append(match)
+    seen = []
+    for item in cleaned:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
 def normalize_action(raw_action: dict[str, Any]) -> SafeCodeAction:
     if "action" in raw_action and isinstance(raw_action["action"], dict):
         raw_action = raw_action["action"]
@@ -117,6 +136,9 @@ def normalize_action(raw_action: dict[str, Any]) -> SafeCodeAction:
         normalized["path"] = raw_action.get("path", ".")
     elif action_type == "write_file":
         normalized["content"] = raw_action.get("content")
+    elif action_type == "edit_file":
+        normalized["old_text"] = raw_action.get("old_text")
+        normalized["new_text"] = raw_action.get("new_text")
     elif action_type == "search":
         normalized["pattern"] = raw_action.get("pattern")
     elif action_type == "run_command":
@@ -127,7 +149,7 @@ def normalize_action(raw_action: dict[str, Any]) -> SafeCodeAction:
     return SafeCodeAction(**normalized)
 
 
-def choose_action(llm: OpenAI, messages: list[dict[str, str]]) -> SafeCodeAction:
+def choose_action(llm: OpenAI, messages: list[dict[str, str]], step: int) -> SafeCodeAction:
     raw_response = call_llm(llm, messages)
     try:
         raw_action = extract_json_object(raw_response)
@@ -154,7 +176,7 @@ def choose_action(llm: OpenAI, messages: list[dict[str, str]]) -> SafeCodeAction
             raw_action = extract_json_object(retry_response)
             return normalize_action(raw_action)
         except Exception:
-            fallback = fallback_action(messages)
+            fallback = fallback_action(messages, step)
             messages.append(
                 {
                     "role": "assistant",
@@ -164,12 +186,32 @@ def choose_action(llm: OpenAI, messages: list[dict[str, str]]) -> SafeCodeAction
             return fallback
 
 
-def fallback_action(messages: list[dict[str, str]]) -> SafeCodeAction:
+def fallback_action(messages: list[dict[str, str]], step: int) -> SafeCodeAction:
     transcript = "\n".join(message.get("content", "") for message in messages[-6:])
-    if '"available_tools"' in transcript and "submit" in transcript:
+    candidate_paths = extract_candidate_paths(transcript)
+
+    if "failed" in transcript or "error" in transcript:
+        focused = [
+            path
+            for path in candidate_paths
+            if path.startswith("src/") or path.startswith("tests/") or path.endswith(".py")
+        ]
+        if focused:
+            return SafeCodeAction(action_type="read_files", paths=focused[:2], path=".")
+        if "pytest" not in transcript:
+            return SafeCodeAction(action_type="run_command", command="pytest -q")
+
+    if step >= MAX_AGENT_STEPS - 1:
         if "pytest" not in transcript:
             return SafeCodeAction(action_type="run_command", command="pytest -q")
         return SafeCodeAction(action_type="submit")
+
+    if "run_command" not in transcript and "pytest" not in transcript:
+        return SafeCodeAction(action_type="run_command", command="pytest -q")
+
+    if candidate_paths:
+        return SafeCodeAction(action_type="read_files", paths=candidate_paths[:2], path=".")
+
     return SafeCodeAction(action_type="list_files", path=".")
 
 
@@ -207,7 +249,7 @@ def run_episode(llm: OpenAI, env: SafeCodeEnv) -> float:
     final_reward = 0.0
 
     for step in range(1, MAX_AGENT_STEPS + 1):
-        action = choose_action(llm, messages)
+        action = choose_action(llm, messages, step)
         result = env.step(action)
         obs = result.observation
         final_reward = result.reward or obs.reward
@@ -233,6 +275,17 @@ def run_episode(llm: OpenAI, env: SafeCodeEnv) -> float:
                 ),
             }
         )
+
+        if not obs.done and step >= MAX_AGENT_STEPS - 2 and action.action_type != "diff":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You are near the step limit. Prefer validating with pytest, inspecting a diff, "
+                        "and then submitting if the workspace looks correct."
+                    ),
+                }
+            )
 
         if obs.done:
             break

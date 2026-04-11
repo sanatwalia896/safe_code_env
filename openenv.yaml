@@ -19,7 +19,7 @@ tasks:
     difficulty: medium
     description: "Fix a real SQL injection bug in db_utils.py and pass the provided tests"
   - id: task_3
-    difficulty: medium
+    difficulty: easy
     description: "Repair a broken validator module in src/validator.py so the test suite passes"
   - id: task_4
     difficulty: medium
@@ -30,3 +30,6 @@ tasks:
   - id: task_6
     difficulty: medium
     description: "Repair recursive secret redaction in src/audit.py"
+  - id: task_7
+    difficulty: hard
+    description: "Repair pricing logic in a larger multi-module orders codebase under src/orders/"
