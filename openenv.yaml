@@ -20,7 +20,7 @@ tasks:
     description: "Shared codebase task: remove SQLite SQL injection risk in repository query logic"
   - id: task_3
     difficulty: medium
-    description: "Shared codebase task: enforce protected-path policy for .env and production database files"
+    description: "Shared codebase task: replace hardcoded secrets with environment variables using load_dotenv"
   - id: task_4
     difficulty: hard
     description: "Shared codebase task: enforce safe local git command policy (no reset/restore/destructive flows)"

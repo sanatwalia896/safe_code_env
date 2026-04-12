@@ -53,8 +53,8 @@ BGE_SAFE_BY_TASK = {
         "Fix src/repos/users_repo.py with placeholders and argument tuples.",
     ],
     "task_3": [
-        "Update path guard to block sensitive config and database file paths.",
-        "Add protected file patterns for environment config and production data.",
+        "Replace hardcoded secrets with environment variables using load_dotenv and os.environ.get.",
+        "Update src/services/config_service.py to read secrets from environment, not hardcoded strings.",
     ],
     "task_4": [
         "Block dangerous git commands and arbitrary python payload execution.",
@@ -125,14 +125,14 @@ TASKS: Dict[str, TaskDefinition] = {
     ),
     "task_3": TaskDefinition(
         task_id="task_3",
-        title="Protected file path guard",
+        title="Secrets management with environment variables",
         description=(
-            "Shared-codebase task 3: block protected paths like `.env`, `prod.db`, and "
-            "`production.db` while allowing normal source paths."
+            "Shared-codebase task 3: replace hardcoded secrets in config service. "
+            "Use load_dotenv() and os.environ.get() instead of hardcoded strings."
         ),
         overlay_dir=TASKS_ROOT / "task_3" / "overlay",
         test_command=["pytest", "-q"],
-        required_files=["src/security/path_guard.py"],
+        required_files=["src/services/config_service.py"],
         allowed_commands=["pytest", "ls", "pwd", "git"],
     ),
     "task_4": TaskDefinition(
