@@ -34,6 +34,8 @@ class SafeCodeEnv(
             exit_code=obs_data.get("exit_code", 0),
             reward=obs_data.get("reward", payload.get("reward", 0.0)),
             done=payload.get("done", obs_data.get("done", False)),
+            passed_tests=obs_data.get("passed_tests", 0),
+            failed_tests=obs_data.get("failed_tests", 0),
             feedback=obs_data.get("feedback", ""),
             task_id=obs_data.get("task_id", ""),
             task_description=obs_data.get("task_description", ""),

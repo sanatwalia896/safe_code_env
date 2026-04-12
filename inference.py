@@ -25,45 +25,48 @@ load_dotenv(find_dotenv())
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Meta-Llama-3.1-8B-Instruct")
 API_KEY = os.environ.get("HF_TOKEN", "")
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+API_BASE_URL = "https://router.huggingface.co/v1"
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:8000")
-MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "14"))
-NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "7"))
+MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "10"))
+NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "4"))
+MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "8"))
+MODEL_MAX_TOKENS = int(os.environ.get("MODEL_MAX_TOKENS", "700"))
+MAX_READ_FILES_PER_ACTION = int(os.environ.get("MAX_READ_FILES_PER_ACTION", "2"))
+
+TASK_FOCUS_FILES = {
+    "task_1": ["src/api/health.py", "tests/test_health_api.py"],
+    "task_2": ["src/repos/users_repo.py", "tests/test_users_repo.py"],
+    "task_3": ["src/security/path_guard.py", "tests/test_path_guard.py"],
+    "task_4": ["src/security/command_guard.py", "tests/test_command_guard.py"],
+}
 
 SYSTEM_PROMPT = """You are a careful coding agent operating inside a workspace environment.
 
-You do not output code directly unless you are using the `write_file` or `edit_file` actions.
-You must choose exactly one environment action at a time.
+Return one JSON action only.
 
-Available action schema:
+Preferred actions for token efficiency:
 {
-  "action_type": "list_files" | "read_file" | "read_files" | "write_file" | "edit_file" | "search" | "diff" | "run_command" | "submit",
+  "action_type": "read_files" | "edit_file" | "run_command" | "submit",
   "path": "workspace-relative path",
   "paths": ["workspace-relative path", "..."],
-  "content": "full replacement file contents for write_file",
   "old_text": "exact text to be replaced for edit_file",
   "new_text": "replacement text for edit_file",
-  "pattern": "substring or regex-lite text for search",
   "command": "command string for run_command"
 }
 
 Rules:
 - Always return exactly one JSON object, with no markdown fences and no explanation.
-- BE TOKEN EFFICIENT: Use the minimum number of actions necessary.
-- Prefer inspecting files and tests before editing.
-- Use `read_files` when you need to inspect a source file and its test together.
-- Use `edit_file` for precise modifications; it requires that `old_text` be unique in the file.
-- Use `write_file` only when a complete rewrite is necessary.
-- Mandatory: Run `pytest -q` using `run_command` after every modification to verify progress.
-- Mandatory: Use `diff` to check changes before using `submit`.
-- Use `submit` only when you believe the workspace is fixed or when you are out of ideas.
-- Never reference files outside the workspace.
+- Minimize actions. Aim for this flow: read_files -> edit_file -> run_command(pytest -q) -> submit.
+- Use read_files with at most 2 files, focused on task-relevant source + test.
+- Use edit_file with a precise replacement.
+- After edits, run pytest -q once.
+- Submit when tests are green or when stuck near step limit.
 """
 
 
 def build_client() -> OpenAI:
     if not API_KEY:
-        raise RuntimeError("HF_TOKEN environment variable not set")
+        raise RuntimeError("Set HF_TOKEN environment variable")
     return OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
 
 
@@ -75,10 +78,30 @@ def call_llm(llm: OpenAI, messages: list[dict[str, str]]) -> str:
             response = llm.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messages,
-                max_tokens=2000,
+                max_tokens=MODEL_MAX_TOKENS,
                 temperature=0.1,
             )
             return (response.choices[0].message.content or "").strip()
+        except openai.APIStatusError as e:
+            status = getattr(e, "status_code", None)
+            if status in {401, 402, 403}:
+                raise RuntimeError(
+                    "LLM request failed with a non-retriable auth/billing error "
+                    f"(status={status}). Check HF_TOKEN/account credits, "
+                    "or switch API_BASE_URL/provider."
+                ) from e
+            if status == 429:
+                message = str(e).lower()
+                if "tokens per day" in message or "rate limit reached for model" in message:
+                    raise RuntimeError(
+                        "Daily/token quota exceeded on provider (429). "
+                        "Reduce episodes/tokens or switch model/provider."
+                    ) from e
+            if attempt == max_retries - 1:
+                raise e
+            print(f"LLM API error (status={status}). Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+            retry_delay *= 2
         except openai.RateLimitError as e:
             if attempt == max_retries - 1:
                 raise e
@@ -112,20 +135,20 @@ def extract_json_object(text: str) -> dict[str, Any]:
 def observation_to_user_message(obs) -> str:
     payload = {
         "task_id": obs.task_id,
-        "task_description": obs.task_description,
+        "task": obs.task_description,
         "success": obs.success,
         "feedback": obs.feedback,
         "reward": obs.reward,
         "done": obs.done,
-        "current_path": obs.current_path,
-        "files": obs.files[:100],
-        "changed_files": obs.changed_files[:100],
-        "output": obs.output[:4000],
-        "error": obs.error[:2000],
+        "passed_tests": obs.passed_tests,
+        "failed_tests": obs.failed_tests,
+        "changed_files": obs.changed_files[:20],
+        "files": obs.files[:15],
+        "output": obs.output[:1200],
+        "error": obs.error[:500],
         "exit_code": obs.exit_code,
-        "available_tools": obs.available_tools,
     }
-    return json.dumps(payload, indent=2)
+    return json.dumps(payload, separators=(",", ":"))
 
 
 def extract_candidate_paths(text: str) -> list[str]:
@@ -168,6 +191,33 @@ def normalize_action(raw_action: dict[str, Any]) -> SafeCodeAction:
     return SafeCodeAction(**normalized)
 
 
+def sanitize_action_for_task(action: SafeCodeAction, task_id: str) -> SafeCodeAction:
+    if action.action_type != "read_files":
+        return action
+
+    focus = TASK_FOCUS_FILES.get(task_id, [])
+    paths = action.paths or ([] if not action.path else [action.path])
+    cleaned = [p for p in paths if isinstance(p, str) and p]
+    if not cleaned:
+        cleaned = focus[:MAX_READ_FILES_PER_ACTION]
+
+    if focus:
+        prioritized = [p for p in cleaned if p in focus]
+        if len(prioritized) < MAX_READ_FILES_PER_ACTION:
+            for p in focus:
+                if p not in prioritized:
+                    prioritized.append(p)
+                if len(prioritized) >= MAX_READ_FILES_PER_ACTION:
+                    break
+        cleaned = prioritized or cleaned
+
+    return SafeCodeAction(
+        action_type="read_files",
+        paths=cleaned[:MAX_READ_FILES_PER_ACTION],
+        path=".",
+    )
+
+
 def choose_action(llm: OpenAI, messages: list[dict[str, str]], step: int) -> SafeCodeAction:
     raw_response = call_llm(llm, messages)
     try:
@@ -206,7 +256,7 @@ def choose_action(llm: OpenAI, messages: list[dict[str, str]], step: int) -> Saf
 
 
 def fallback_action(messages: list[dict[str, str]], step: int) -> SafeCodeAction:
-    transcript = "\n".join(message.get("content", "") for message in messages[-6:])
+    transcript = "\n".join(message.get("content", "") for message in messages[-4:])
     candidate_paths = extract_candidate_paths(transcript)
 
     if "failed" in transcript or "error" in transcript:
@@ -259,6 +309,7 @@ def run_episode(llm: OpenAI, env: SafeCodeEnv) -> float:
             "role": "user",
             "content": (
                 "You are starting a new task in the Safe Code workspace environment.\n"
+                f"Focus files for this task: {', '.join(TASK_FOCUS_FILES.get(obs.task_id, [])) or 'use minimal relevant files'}\n"
                 "Current observation:\n"
                 f"{observation_to_user_message(obs)}"
             ),
@@ -268,21 +319,27 @@ def run_episode(llm: OpenAI, env: SafeCodeEnv) -> float:
     final_reward = 0.0
 
     for step in range(1, MAX_AGENT_STEPS + 1):
+        if len(messages) > MAX_HISTORY_MESSAGES:
+            messages = [messages[0]] + messages[-(MAX_HISTORY_MESSAGES - 1) :]
+
         action = choose_action(llm, messages, step)
+        action = sanitize_action_for_task(action, obs.task_id)
         result = env.step(action)
         obs = result.observation
         final_reward = result.reward or obs.reward
 
         print(
             f"[STEP] step={step} action={short_action_log(action)} "
-            f"reward={final_reward:.2f} done={obs.done}"
+            f"reward={final_reward:.2f} success={str(obs.success).lower()} done={obs.done}"
         )
+        if not obs.success and obs.error:
+            print(f"[STEP-ERROR] {obs.error[:220]}")
         sys.stdout.flush()
 
         messages.append(
             {
                 "role": "assistant",
-                "content": json.dumps(action.model_dump(exclude_none=True)),
+                "content": json.dumps(action.model_dump(exclude_none=True), separators=(",", ":")),
             }
         )
         messages.append(
@@ -295,16 +352,24 @@ def run_episode(llm: OpenAI, env: SafeCodeEnv) -> float:
             }
         )
 
-        if not obs.done and step >= MAX_AGENT_STEPS - 2 and action.action_type != "diff":
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "You are near the step limit. Prefer validating with pytest, inspecting a diff, "
-                        "and then submitting if the workspace looks correct."
-                    ),
-                }
+        if (
+            not obs.done
+            and action.action_type == "run_command"
+            and action.command == "pytest -q"
+            and obs.failed_tests == 0
+            and obs.passed_tests > 0
+        ):
+            submit_action = SafeCodeAction(action_type="submit")
+            submit_result = env.step(submit_action)
+            obs = submit_result.observation
+            final_reward = submit_result.reward or obs.reward
+            print(
+                f"[STEP] step={step+1} action={short_action_log(submit_action)} "
+                f"reward={final_reward:.2f} done={obs.done}"
             )
+            sys.stdout.flush()
+            if obs.done:
+                break
 
         if obs.done:
             break
@@ -320,9 +385,13 @@ def main() -> None:
 
     with SafeCodeEnv(base_url=ENV_URL).sync() as env:
         for _ in range(NUM_EPISODES):
-            reward = run_episode(llm, env)
-            rewards.append(reward)
-            time.sleep(1)
+            try:
+                reward = run_episode(llm, env)
+                rewards.append(reward)
+                time.sleep(1)
+            except (openai.RateLimitError, RuntimeError) as exc:
+                print(f"[STOP] inference halted: {exc}")
+                break
 
 
 if __name__ == "__main__":

@@ -44,6 +44,18 @@ TOOL_NAMES = [
     "submit",
 ]
 MAX_STEPS = 25
+MAX_OUTPUT_CHARS = 2800
+MAX_ERROR_CHARS = 1200
+MAX_READ_CHARS = 9000
+MAX_DIFF_CHARS = 9000
+MAX_READ_FILES_PER_CALL = 2
+MAX_RESET_FILE_LIST = 40
+AUTO_COMPLETE_ON_GREEN_PYTEST = True
+
+INFO_ACTION_REWARD = 0.01
+EDIT_ACTION_REWARD = 0.04
+NON_TEST_COMMAND_REWARD = 0.01
+TOOL_ERROR_PENALTY = -0.03
 
 
 class SafeCodeEnvironment(Environment):
@@ -55,6 +67,8 @@ class SafeCodeEnvironment(Environment):
         self._task_idx = 0
         self._workspace_path: Path | None = None
         self._starter_snapshot: dict[str, str] = {}
+        self._tool_error_count = 0
+        self._last_test_progress: float | None = None
         self._state = SafeCodeState(
             episode_id=str(uuid4()),
             step_count=0,
@@ -84,10 +98,12 @@ class SafeCodeEnvironment(Environment):
             last_command="",
             last_exit_code=0,
         )
+        self._tool_error_count = 0
+        self._last_test_progress = None
 
         return SafeCodeObservation(
             success=True,
-            output="\n".join(self._list_files(".")),
+            output="\n".join(self._list_files(".")[:MAX_RESET_FILE_LIST]),
             error="",
             exit_code=0,
             reward=0.0,
@@ -97,7 +113,7 @@ class SafeCodeEnvironment(Environment):
             task_description=task.description,
             workspace_path=str(workspace_path),
             current_path=".",
-            files=self._list_files("."),
+            files=self._list_files(".")[:MAX_RESET_FILE_LIST],
             changed_files=[],
             available_tools=TOOL_NAMES.copy(),
             metadata={"task_title": task.title},
@@ -108,6 +124,10 @@ class SafeCodeEnvironment(Environment):
         self._state.step_count += 1
 
         observation = self._dispatch(action)
+        if not observation.success and not observation.done:
+            self._tool_error_count += 1
+            if observation.reward >= 0.0:
+                observation.reward = TOOL_ERROR_PENALTY
         observation.changed_files = self._compute_changed_files()
         observation.available_tools = TOOL_NAMES.copy()
         observation.task_id = self._state.task_id
@@ -128,6 +148,7 @@ class SafeCodeEnvironment(Environment):
                 final=True,
             )
             observation.reward = final_result.reward
+            observation.reward = self._apply_final_reward_adjustments(observation.reward)
             observation.done = True
             observation.feedback = (
                 "Step limit reached. Final evaluation executed. "
@@ -148,6 +169,7 @@ class SafeCodeEnvironment(Environment):
             return SafeCodeObservation(
                 success=True,
                 output="\n".join(files),
+                reward=INFO_ACTION_REWARD,
                 feedback=f"Listed {len(files)} paths under {action.path}.",
                 current_path=action.path,
                 files=files,
@@ -163,7 +185,8 @@ class SafeCodeEnvironment(Environment):
             content = path.read_text(encoding="utf-8")
             return SafeCodeObservation(
                 success=True,
-                output=content[:12000],
+                output=self._truncate_text(content, MAX_READ_CHARS),
+                reward=INFO_ACTION_REWARD,
                 feedback=f"Read {action.path}.",
                 current_path=action.path,
             )
@@ -174,7 +197,7 @@ class SafeCodeEnvironment(Environment):
                 return self._error_observation("read_files requires paths", ".")
             chunks = []
             resolved_files = []
-            for relative_path in paths[:10]:
+            for relative_path in paths[:MAX_READ_FILES_PER_CALL]:
                 try:
                     path = self._resolve_path(relative_path)
                 except ValueError as exc:
@@ -186,8 +209,9 @@ class SafeCodeEnvironment(Environment):
                 resolved_files.append(relative_path)
             return SafeCodeObservation(
                 success=True,
-                output="\n\n".join(chunks)[:12000],
-                feedback=f"Read {len(resolved_files)} files.",
+                output=self._truncate_text("\n\n".join(chunks), MAX_READ_CHARS),
+                reward=INFO_ACTION_REWARD,
+                feedback=f"Read {len(resolved_files)} files (cap={MAX_READ_FILES_PER_CALL}).",
                 current_path=".",
                 files=resolved_files,
             )
@@ -204,7 +228,7 @@ class SafeCodeEnvironment(Environment):
             return SafeCodeObservation(
                 success=True,
                 output=f"Wrote {len(action.content)} bytes to {action.path}",
-                reward=0.05,
+                reward=EDIT_ACTION_REWARD,
                 feedback=f"Updated {action.path}.",
                 current_path=action.path,
             )
@@ -231,7 +255,7 @@ class SafeCodeEnvironment(Environment):
             return SafeCodeObservation(
                 success=True,
                 output=f"Replaced '{action.old_text}' with '{action.new_text}' in {action.path}",
-                reward=0.05,
+                reward=EDIT_ACTION_REWARD,
                 feedback=f"Edited {action.path}.",
                 current_path=action.path,
             )
@@ -257,10 +281,10 @@ class SafeCodeEnvironment(Environment):
             )
             return SafeCodeObservation(
                 success=result.success,
-                output=result.stdout[:4000],
-                error=result.stderr[:2000],
+                output=self._truncate_text(result.stdout, MAX_OUTPUT_CHARS),
+                error=self._truncate_text(result.stderr, MAX_ERROR_CHARS),
                 exit_code=result.exit_code,
-                reward=result.reward,
+                reward=self._apply_final_reward_adjustments(result.reward),
                 done=True,
                 feedback=result.feedback,
                 current_path=".",
@@ -284,6 +308,11 @@ class SafeCodeEnvironment(Environment):
                 f"Command '{parts[0]}' is not allowed. Allowed commands: {sorted(task_commands)}",
                 ".",
             )
+        if not self._is_command_safe(parts):
+            return self._error_observation(
+                f"Command blocked by safety policy: {' '.join(parts)}",
+                ".",
+            )
 
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
@@ -295,38 +324,86 @@ class SafeCodeEnvironment(Environment):
             python_paths.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
-        result = subprocess.run(
-            parts,
-            cwd=str(self._workspace_path),
-            capture_output=True,
-            text=True,
-            timeout=20,
-            env=env,
-        )
+        try:
+            result = subprocess.run(
+                parts,
+                cwd=str(self._workspace_path),
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return SafeCodeObservation(
+                success=False,
+                output=self._truncate_text(exc.stdout or "", MAX_OUTPUT_CHARS),
+                error=self._truncate_text((exc.stderr or "") + "\nCommand timed out after 20 seconds.", MAX_ERROR_CHARS),
+                exit_code=1,
+                reward=0.0,
+                done=False,
+                feedback="Command timed out.",
+                current_path=".",
+                metadata={"command": command},
+            )
+        except FileNotFoundError:
+            return self._error_observation(f"Command not found: {parts[0]}", ".")
         self._state.last_command = command
 
         reward = 0.0
         feedback = f"Command exited with code {result.returncode}."
+        passed_tests = 0
+        failed_tests = 0
         if parts[0] == "pytest":
             grade = self._grader.evaluate_workspace(
                 self._state.task_id,
                 self._workspace_path,
                 final=False,
             )
-            reward = grade.reward
+            reward = self._shape_pytest_reward(grade.reward, grade.passed_tests, grade.failed_tests)
             feedback = grade.feedback
+            passed_tests = grade.passed_tests
+            failed_tests = grade.failed_tests
+            if (
+                AUTO_COMPLETE_ON_GREEN_PYTEST
+                and result.returncode == 0
+                and passed_tests > 0
+                and failed_tests == 0
+            ):
+                final_grade = self._grader.evaluate_workspace(
+                    self._state.task_id,
+                    self._workspace_path,
+                    final=True,
+                )
+                final_reward = self._apply_final_reward_adjustments(final_grade.reward)
+                return SafeCodeObservation(
+                    success=True,
+                    output=self._truncate_command_output(result.stdout, parts),
+                    error=self._truncate_text(result.stderr, MAX_ERROR_CHARS),
+                    exit_code=result.returncode,
+                    reward=final_reward,
+                    done=True,
+                    feedback=f"{final_grade.feedback} Auto-completed after green pytest.",
+                    current_path=".",
+                    passed_tests=final_grade.passed_tests,
+                    failed_tests=final_grade.failed_tests,
+                    metadata={"command": command, "auto_completed": True},
+                )
+        elif result.returncode == 0:
+            reward = NON_TEST_COMMAND_REWARD
+        else:
+            reward = TOOL_ERROR_PENALTY
 
         return SafeCodeObservation(
             success=result.returncode == 0,
-            output=result.stdout[:4000],
-            error=result.stderr[:2000],
+            output=self._truncate_command_output(result.stdout, parts),
+            error=self._truncate_text(result.stderr, MAX_ERROR_CHARS),
             exit_code=result.returncode,
             reward=reward,
             done=False,
             feedback=feedback,
             current_path=".",
-            passed_tests=getattr(grade, 'passed_tests', 0) if parts[0] == "pytest" else 0,
-            failed_tests=getattr(grade, 'failed_tests', 0) if parts[0] == "pytest" else 0,
+            passed_tests=passed_tests,
+            failed_tests=failed_tests,
             metadata={"command": command},
         )
 
@@ -350,9 +427,10 @@ class SafeCodeEnvironment(Environment):
             error = result.stderr if result.returncode not in (0, 1) else ""
             return SafeCodeObservation(
                 success=result.returncode in (0, 1),
-                output=output[:4000],
-                error=error[:2000],
+                output=self._truncate_text(output, MAX_OUTPUT_CHARS),
+                error=self._truncate_text(error, MAX_ERROR_CHARS),
                 exit_code=0 if result.returncode in (0, 1) else result.returncode,
+                reward=INFO_ACTION_REWARD if result.returncode in (0, 1) else TOOL_ERROR_PENALTY,
                 feedback="Search completed.",
                 current_path=path,
                 files=self._extract_search_files(output),
@@ -372,7 +450,8 @@ class SafeCodeEnvironment(Environment):
                     matches.append(f"{rel_path}:{line_no}:{line}")
         return SafeCodeObservation(
             success=True,
-            output="\n".join(matches[:200]),
+            output=self._truncate_text("\n".join(matches[:200]), MAX_OUTPUT_CHARS),
+            reward=INFO_ACTION_REWARD,
             feedback="Search completed.",
             current_path=path,
             files=sorted({item.split(":", 1)[0] for item in matches}),
@@ -392,6 +471,7 @@ class SafeCodeEnvironment(Environment):
             return SafeCodeObservation(
                 success=True,
                 output="",
+                reward=INFO_ACTION_REWARD,
                 feedback="No workspace changes yet.",
                 current_path=path or ".",
                 files=[],
@@ -417,7 +497,8 @@ class SafeCodeEnvironment(Environment):
 
         return SafeCodeObservation(
             success=True,
-            output="\n".join(chunk for chunk in diff_chunks if chunk)[:12000],
+            output=self._truncate_text("\n".join(chunk for chunk in diff_chunks if chunk), MAX_DIFF_CHARS),
+            reward=INFO_ACTION_REWARD,
             feedback=f"Generated diff for {len(changed_files)} changed files.",
             current_path=path or ".",
             files=changed_files,
@@ -485,17 +566,66 @@ class SafeCodeEnvironment(Environment):
                 files.append(line.split(":", 1)[0])
         return sorted(set(files))
 
+    def _is_command_safe(self, parts: list[str]) -> bool:
+        if not parts:
+            return False
+        cmd = parts[0]
+        if cmd in {"pytest", "ls", "pwd"}:
+            return True
+        if cmd in {"python", "python3"}:
+            return len(parts) >= 3 and parts[1] == "-m" and parts[2] == "pytest"
+        if cmd == "git":
+            if len(parts) < 2:
+                return False
+            verb = parts[1]
+            forbidden_verbs = {"reset", "restore", "push", "rebase", "clean", "cherry-pick", "am"}
+            allowed_verbs = {"status", "diff", "log", "branch", "checkout", "merge", "add", "commit"}
+            if verb in forbidden_verbs or verb not in allowed_verbs:
+                return False
+            return "--hard" not in parts
+        return False
+
     def _error_observation(self, message: str, path: str) -> SafeCodeObservation:
         return SafeCodeObservation(
             success=False,
             output="",
-            error=message,
+            error=self._truncate_text(message, MAX_ERROR_CHARS),
             exit_code=1,
             reward=0.0,
             done=False,
             feedback=message,
             current_path=path,
         )
+
+    def _truncate_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        head = int(limit * 0.65)
+        tail = limit - head - len("\n...<truncated>...\n")
+        return text[:head] + "\n...<truncated>...\n" + text[-max(tail, 0):]
+
+    def _truncate_command_output(self, text: str, parts: list[str]) -> str:
+        if parts and parts[0] == "pytest":
+            return self._truncate_text(text, MAX_OUTPUT_CHARS)
+        return self._truncate_text(text, MAX_OUTPUT_CHARS // 2)
+
+    def _shape_pytest_reward(self, base_reward: float, passed: int, failed: int) -> float:
+        total = passed + failed
+        progress = (passed / total) if total > 0 else 0.0
+        prev_progress = self._last_test_progress
+        delta = progress if prev_progress is None else (progress - prev_progress)
+        self._last_test_progress = progress
+
+        dense = 0.04 + (0.50 * progress) + (0.35 * max(delta, 0.0)) - (0.20 * max(-delta, 0.0))
+        blended = (0.60 * base_reward) + (0.40 * dense)
+        return round(max(0.0, min(0.95, blended)), 3)
+
+    def _apply_final_reward_adjustments(self, reward: float) -> float:
+        extra_steps = max(0, self._state.step_count - 6)
+        step_penalty = min(0.12, extra_steps * 0.01)
+        error_penalty = min(0.15, self._tool_error_count * 0.02)
+        adjusted = reward - step_penalty - error_penalty
+        return round(max(0.0, min(1.0, adjusted)), 3)
 
     def _ensure_workspace(self) -> None:
         if self._workspace_path is None:

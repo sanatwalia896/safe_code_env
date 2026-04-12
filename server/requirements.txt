@@ -1,5 +1,5 @@
 openenv[core]>=0.2.0
 fastapi>=0.115.0
-flask>=3.0.0
 pytest>=8.0.0
 uvicorn>=0.24.0
+email-validator>=2.1.0

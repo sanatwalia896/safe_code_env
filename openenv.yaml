@@ -14,22 +14,13 @@ tags:
 tasks:
   - id: task_1
     difficulty: easy
-    description: "Repair a Flask app so /health returns {\"status\": \"ok\"} and the real tests pass"
+    description: "Shared codebase task: fix FastAPI /health response contract and SQLite readiness signal"
   - id: task_2
     difficulty: medium
-    description: "Fix a real SQL injection bug in db_utils.py and pass the provided tests"
+    description: "Shared codebase task: remove SQLite SQL injection risk in repository query logic"
   - id: task_3
-    difficulty: easy
-    description: "Repair a broken validator module in src/validator.py so the test suite passes"
+    difficulty: medium
+    description: "Shared codebase task: enforce protected-path policy for .env and production database files"
   - id: task_4
     difficulty: medium
-    description: "Repair a rolling-window rate limiter implementation in src/rate_limit.py"
-  - id: task_5
-    difficulty: medium
-    description: "Repair a JSON config loader so defaults merge correctly and invalid JSON raises ValueError"
-  - id: task_6
-    difficulty: medium
-    description: "Repair recursive secret redaction in src/audit.py"
-  - id: task_7
-    difficulty: hard
-    description: "Repair pricing logic in a larger multi-module orders codebase under src/orders/"
+    description: "Shared codebase task: enforce safe local git command policy (no reset/restore/destructive flows)"

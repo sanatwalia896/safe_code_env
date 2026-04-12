@@ -16,10 +16,10 @@ requires-python = ">=3.10"
 dependencies = [
     "openenv-core[core]>=0.2.2",
     "fastapi>=0.104.0",
-    "flask>=3.0.0",
     "pytest>=8.0.0",
     "uvicorn>=0.24.0",
     "pydantic>=2.0.0",
+    "email-validator>=2.1.0",
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
 ]
@@ -39,4 +39,4 @@ packages = ["safe_code_env", "safe_code_env.server"]
 package-dir = { "safe_code_env" = ".", "safe_code_env.server" = "server" }
 
 [tool.setuptools.package-data]
-"safe_code_env.server" = ["tasks/**/*"]
+"safe_code_env.server" = ["tasks/**/*", "base_codebase/**/*"]

@@ -13,11 +13,11 @@ tags:
 
 # Safe Code Env Environment
 
-Safe Code Env now behaves like a real coding workspace instead of a single-shot code grader. Each episode seeds a broken mini-repository into a temp directory, exposes explicit tools over that workspace, and grades the final filesystem state by running the real test suite.
+Safe Code Env uses a single shared FastAPI + SQLite codebase for all tasks. Each episode seeds a workspace from `server/base_codebase`, applies a task-specific overlay, and then grades the final filesystem state by running real tests.
 
 ## How It Works
 
-- `reset()` creates a fresh workspace from `server/tasks/<task_id>/starter`
+- `reset()` creates a fresh workspace from `server/base_codebase` plus `server/tasks/<task_id>/overlay`
 - the agent uses one tool per `step()`
 - the workspace persists across steps
 - `submit` runs the final grader against the actual files and tests
@@ -73,21 +73,25 @@ Each observation includes:
 
 ## Task Layout
 
-The environment currently seeds seven realistic starter repos:
+The environment currently seeds five task overlays on the same shared codebase:
 
-- `task_1`: Flask `/health` endpoint repair
-- `task_2`: SQL injection fix in `db_utils.py`
-- `task_3`: broken validator module under `src/`
-- `task_4`: broken rolling-window rate limiter
-- `task_5`: broken JSON config loader/default merge
-- `task_6`: broken recursive audit secret redaction
-- `task_7`: larger multi-module orders service with a pricing bug under `src/orders/`
+- `task_1`: FastAPI `/health` response contract fix
+- `task_2`: SQLite query parameterization / SQL injection fix
+- `task_3`: protected file path policy (`.env`, production db files)
+- `task_4`: local git safety policy (`git reset` / `git restore` forbidden)
+- `task_5`: users endpoint + service integration fix over SQLite
 
-The source for those tasks lives under [server/tasks](/Users/sanat/Documents/PROJECTS/scaler_hackathon/safe_code_env/server/tasks).
+The shared base repo lives in [server/base_codebase](/Users/sanat/Documents/PROJECTS/scaler_hackathon/safe_code_env/server/base_codebase), and task overlays live in [server/tasks](/Users/sanat/Documents/PROJECTS/scaler_hackathon/safe_code_env/server/tasks).
 
 ## Grading
 
-The grader reads the final workspace state and runs each task’s real pytest suite. `run_command` with `pytest -q` gives partial progress, while `submit` performs final evaluation and ends the episode. `diff` shows the current workspace delta relative to the seeded starter, and `read_files` lets the agent inspect multiple files in one step. The largest task (`task_7`) forces the agent to navigate a broader service-style codebase rather than a single file.
+The grader reads the final workspace state and runs each task’s real pytest suite. `run_command` with `pytest -q` gives partial progress, while `submit` performs final evaluation and ends the episode. `diff` shows the workspace delta relative to seeded baseline.
+
+Safety constraints include:
+
+- blocked protected paths (`.env`, production SQLite files)
+- blocked dangerous git commands (`reset`, `restore`, and hard resets)
+- blocked arbitrary python payload execution via `run_command`
 
 ## Local Run
 
