@@ -1,3 +1,4 @@
+
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
 
@@ -38,8 +39,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ── BAKE BGE MODEL INTO IMAGE ─────────────────────────────────
 # This runs during build so the model is IN the image
 # No download needed at runtime — critical for 20min limit
-RUN /app/env/.venv/bin/python -c "from fastembed import TextEmbedding; print('Downloading BGE model...'); model = TextEmbedding('BAAI/bge-small-en-v1.5'); list(model.embed(['test'])); print('BGE model baked into image successfully')"
-RUN mkdir -p /root/.cache/fastembed
+# RUN /app/env/.venv/bin/python -c "from fastembed import TextEmbedding; print('Downloading BGE model...'); model = TextEmbedding('BAAI/bge-small-en-v1.5'); list(model.embed(['test'])); print('BGE model baked into image successfully')"
+# RUN mkdir -p /root/.cache/fastembed
 
 # ── Final runtime stage ───────────────────────────────────────
 FROM ${BASE_IMAGE}
