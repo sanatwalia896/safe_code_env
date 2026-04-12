@@ -1,4 +1,3 @@
-
 ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
 FROM ${BASE_IMAGE} AS builder
 
@@ -36,30 +35,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-editable; \
     fi
 
-# ── BAKE BGE MODEL INTO IMAGE ─────────────────────────────────
-# This runs during build so the model is IN the image
-# No download needed at runtime — critical for 20min limit
-# RUN /app/env/.venv/bin/python -c "from fastembed import TextEmbedding; print('Downloading BGE model...'); model = TextEmbedding('BAAI/bge-small-en-v1.5'); list(model.embed(['test'])); print('BGE model baked into image successfully')"
-# RUN mkdir -p /root/.cache/fastembed
-
 # ── Final runtime stage ───────────────────────────────────────
 FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# copy venv with BGE model already inside
 COPY --from=builder /app/env/.venv /app/.venv
-
-# copy environment code
 COPY --from=builder /app/env /app/env
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
-# BGE model cache location — fastembed stores here by default
-# copy from builder so it's available at runtime
-COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
-COPY --from=builder /root/.cache/fastembed   /root/.cache/fastembed
+# HF_TOKEN must be injected at runtime via your deployment platform's secret/env config
+# e.g. docker run -e HF_TOKEN=hf_xxx ...
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
