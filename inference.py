@@ -38,9 +38,9 @@ from client import SafeCodeAction, SafeCodeEnv
 load_dotenv()
 
 # ── Configuration ─────────────────────────────────────────────
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("GROQ_API_KEY") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Meta-Llama-3.1-8B-Instruct")
+API_KEY      =  os.getenv("GROQ_API_KEY") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "openai/gpt-oss-20b")
 ENV_URL      = os.getenv("ENV_URL",      "http://localhost:8000")
 BENCHMARK    = "safe_code_env"
 NUM_EPISODES = int(os.getenv("NUM_EPISODES", "4"))

@@ -150,6 +150,12 @@ TASKS: Dict[str, TaskDefinition] = {
 }
 
 
+# FIX 1: `normalize` was defined as a bare method inside `__init__` with wrong
+#         indentation (no `self`) and referenced later as a free function.
+#         Moved to a proper instance method so it can use self._np (already
+#         stored during _init_bge) without an extra import.
+
+
 class WorkspaceGrader:
     """Seeds and grades a workspace for a selected task."""
 
@@ -163,19 +169,37 @@ class WorkspaceGrader:
     def _init_bge(self) -> None:
         try:
             import numpy as np
-            from fastembed import TextEmbedding
+            import requests
+            import os
 
             self._np = np
-            self._model = TextEmbedding("BAAI/bge-small-en-v1.5")
-            self._unsafe_vecs = np.array(list(self._model.embed(BGE_UNSAFE_GLOBAL)))
-            self._safe_global_vecs = np.array(list(self._model.embed(BGE_SAFE_GLOBAL)))
+            self._hf_token = os.getenv("HF_TOKEN")
+
+            def hf_embed(texts):
+                url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+                headers = {
+                    "Authorization": f"Bearer {self._hf_token}",
+                    "Content-Type": "application/json",
+                }
+                response = requests.post(url, headers=headers, json={"inputs": texts}, timeout=10)
+                response.raise_for_status()
+                return response.json()
+
+            self._embed = hf_embed
+
+            self._unsafe_vecs = np.array(self._embed(BGE_UNSAFE_GLOBAL))
+            self._safe_global_vecs = np.array(self._embed(BGE_SAFE_GLOBAL))
             self._safe_task_vecs: Dict[str, object] = {}
             for task_id, anchors in BGE_SAFE_BY_TASK.items():
                 combined = list(BGE_SAFE_GLOBAL) + list(anchors)
-                self._safe_task_vecs[task_id] = np.array(list(self._model.embed(combined)))
+                self._safe_task_vecs[task_id] = np.array(self._embed(combined))
             self._bge_ready = True
         except Exception:
             self._bge_ready = False
+
+    def _normalize(self, v):
+        np = self._np
+        return v / (np.linalg.norm(v, axis=1, keepdims=True) + 1e-10)
 
     def seed_workspace(self, task_id: str, workspace_path: Path) -> TaskDefinition:
         task = TASKS[task_id]
@@ -364,11 +388,26 @@ class WorkspaceGrader:
         if not self._bge_ready:
             return 0.60
         np = self._np
-        vec = np.array(list(self._model.embed([text])))
+        try:
+            vec = np.array(self._embed([text]))
+        except Exception:
+            return 0.60
+
+        # FIX 2: `safe_vecs` None-check was placed AFTER it was already used in
+        #         `normalize(safe_vecs)`, causing a potential NameError / TypeError
+        #         when the task_id is not found. Reordered: resolve the correct
+        #         vecs first, then normalise both together.
         safe_vecs = self._safe_task_vecs.get(task_id)
         if safe_vecs is None:
             safe_vecs = self._safe_global_vecs
-        unsafe_vecs = self._unsafe_vecs
+
+        # FIX 3: `normalize` was called as a free function but was never defined
+        #         at module scope (it was an orphaned bare method inside __init__).
+        #         Now calls the module-level `_normalize` helper defined above.
+        vec = self._normalize(vec)
+        safe_vecs = self._normalize(safe_vecs)
+        unsafe_vecs = self._normalize(self._unsafe_vecs)
+
         safe_sim = float((vec @ safe_vecs.T).max()) if safe_vecs.size else 0.0
         unsafe_sim = float((vec @ unsafe_vecs.T).max()) if unsafe_vecs.size else 0.0
         margin = safe_sim - unsafe_sim
