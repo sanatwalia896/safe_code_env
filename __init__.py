@@ -7,10 +7,11 @@
 """Safe Code Env Environment."""
 
 from .client import SafeCodeEnv
-from .models import SafeCodeAction, SafeCodeObservation
+from .models import SafeCodeAction, SafeCodeObservation, SafeCodeState
 
 __all__ = [
     "SafeCodeAction",
     "SafeCodeObservation",
+    "SafeCodeState",
     "SafeCodeEnv",
 ]
